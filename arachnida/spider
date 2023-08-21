@@ -5,7 +5,8 @@ import os
 import logging
 import sys
 import requests
-from typing import List, MutableSet
+from typing import MutableSet
+from bs4 import BeautifulSoup
 
 logging.basicConfig(level=logging.INFO)
 session = requests.Session()
@@ -13,6 +14,7 @@ session.headers.update({"User-Agent": "Arachnida/1.0"})
 
 cached_bodies = {}
 VALID_EXTENSIONS = set(["jpg", "jpeg", "png", "gif", "bmp"])
+
 def get_hostname(url: str) -> str:
     """
     Returns the hostname of a url
@@ -40,9 +42,9 @@ def get_links(
         recursive: bool = False,
         depth: int = 0,
         max_depth: int = 0,
-        origin_hostname: str = None,
+        origin_hostname: str | None = None,
         filter: set = set(),
-    ) -> MutableSet[str]:
+        ) -> MutableSet[str]:
     """
     Returns all lists in a webpage with these formats :
         - http...
@@ -53,32 +55,34 @@ def get_links(
     global cached_bodies
     if origin_hostname is None:
         origin_hostname = get_hostname(url)
-    data = session.head(url)
+    data = session.get(url)
     # check if the page is a html page
+    filter = set([url])
     if "text/html" not in data.headers["Content-Type"] or data.status_code != 200:
-        return []
+        return filter
     else:
-        data = session.get(url).text
-    filter = set()
-    data = data.replace("'", '"')
+        data = data.text
     cached_bodies[url] = data
-    hrefs = data.split("href=")
-    for href in hrefs:
+    if not recursive: # don't bother parsing the page if we're not searching recursively
+        return filter
+    soup = BeautifulSoup(data, "html.parser")
+    # find all <a> or <link> tags
+    for tag in soup.find_all(["a", "link"]):
+        href = tag.get("href")
+        if href is None:
+            continue
         protocol = "https" if href.startswith("https") else "http"
         href = fix_link(href, protocol, get_hostname(url))
-        if not href.startswith("http"): # sometime links are broken
+        if not href.startswith("http"):
             continue
         if get_hostname(href) != origin_hostname:
             continue
-        if href.startswith("http"):
-            if recursive and href not in filter:
-                if depth < max_depth:
-                    filter.update(get_links(href, recursive, depth + 1, max_depth, origin_hostname, filter))
-            filter.add(href)
-    filter.add(url)
+        if href.startswith("http") and recursive and href not in filter and depth < max_depth:
+            filter.update(get_links(href, recursive, depth + 1, max_depth, origin_hostname, filter))
+        filter.add(fix_link(href, protocol, get_hostname(url)))
     return filter
 
-def get_images(urls: MutableSet[str], root_path: str) -> MutableSet[str]:
+def get_images(urls: MutableSet[str], root_path: str):
     global cached_bodies
     for url in urls:
         try:
@@ -90,27 +94,18 @@ def get_images(urls: MutableSet[str], root_path: str) -> MutableSet[str]:
         except:
             raise RuntimeError("Failed to fetch body of {}".format(url))
         # find each src and srcset
-        srcs = data.split("src=")
-        srcsets = data.split("srcset=")
+        soup = BeautifulSoup(data, "html.parser")
+        protocol = "https" if url.startswith("https") else "http"
         to_download = set()
-        for src in srcs:
-            protocol = "https" if src.startswith("https") else "http"
-            src = fix_link(src, protocol, get_hostname(url))
-            if not src.startswith("http"): # sometime links are broken
-                continue
-            to_download.add(src)
-        for srcset in srcsets:
-            # parsing srcset is a bit more complicated
-            # the format is : <src> <size>, <src> <size>, ...
-            srcset = srcset.replace(", ", ",")
-            srcs_sizes = srcset.split(",")
-            for src_size in srcs_sizes:
-                src = " ".join(src_size.split(" ")[:-1])
-                protocol = "https" if src.startswith("https") else "http"
-                src = fix_link(src, protocol, get_hostname(url))
-                if not src.startswith("http"): # sometime links are broken
-                    continue
-                to_download.add(src)
+        for tag in soup.find_all(["img", "source"]):
+            src = tag.get("src")
+            srcset = tag.get("srcset")
+            if src is not None and src.split(".")[-1] in VALID_EXTENSIONS:
+                to_download.add(fix_link(src, protocol, get_hostname(url)))
+            if srcset is not None:
+                for src in srcset.split(","):
+                    if src.split(".")[-1] in VALID_EXTENSIONS:
+                        to_download.add(fix_link(src.split(" ")[0].strip(), protocol, get_hostname(url)))
         for image in to_download:
             protocol = "https" if image.startswith("https") else "http"
             host = get_hostname(image)
@@ -119,6 +114,7 @@ def get_images(urls: MutableSet[str], root_path: str) -> MutableSet[str]:
             output_dir = "{}/{}".format(root_path, "/".join(path.split("/")[:-1]))
             os.makedirs(output_dir, exist_ok=True)
             with open("{}/{}".format(output_dir, path.split("/")[-1]), "wb+") as f:
+                logging.info("Downloading " + url + " to " + output_dir)
                 f.write(session.get(url).content)
 class Spider:
     def _check_url(self) -> bool:
@@ -152,15 +148,15 @@ class Spider:
                     sys.exit(1)
         if not self._check_url():
             print(
-                "Error: URL is not valid, make sure it starts with http:// or https://"
-            )
+                    "Error: URL is not valid, make sure it starts with http:// or https://"
+                    )
             sys.exit(1)
         logging.debug(f"recursive: {self.recursive}")
         logging.debug(f"depth: {self.depth}")
         logging.debug(f"path: {self.path}")
         logging.debug(f"url: {self.url}")
 
-    def crawl(self) -> List[str]:
+    def crawl(self):
         """
         Crawl recursively (or not) a webpage
         """
