@@ -1,0 +1,10 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+# import tkinter as tk
+
+FILE = "exif_test.jpg"
+FILE_HANDLER = open(FILE, "rb")
+
+init_buf = FILE_HANDLER.read(64)
+
+# Check if the EXIF magic is present (0x04578696600004949)

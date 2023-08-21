@@ -1,0 +1,185 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+
+import os
+import logging
+import sys
+import requests
+from typing import List, MutableSet
+
+logging.basicConfig(level=logging.INFO)
+session = requests.Session()
+session.headers.update({"User-Agent": "Arachnida/1.0"})
+
+cached_bodies = {}
+VALID_EXTENSIONS = set(["jpg", "jpeg", "png", "gif", "bmp"])
+def get_hostname(url: str) -> str:
+    """
+    Returns the hostname of a url
+    """
+    return url.split("/")[2]
+
+def fix_link(href: str, protocol: str, hostname: str) -> str:
+    if not href.startswith('"'):
+        return href
+    if href.startswith('"http'): # absolute path
+        href = href.split('"')[1]
+    elif href.startswith('"//'): # relative protocol
+        href = protocol + "://" + href.split('"')[1]
+    elif href.startswith('"#'): # anchors are ignored
+        return href
+    else: # relative path
+        if not href.startswith('"/'):
+            href = protocol + "://" + hostname + "/" + href.split('"')[1]
+        else:
+            href = protocol + "://" + hostname + href.split('"')[1]
+    return href.split("?")[0]
+
+def get_links(
+        url: str,
+        recursive: bool = False,
+        depth: int = 0,
+        max_depth: int = 0,
+        origin_hostname: str = None,
+        filter: set = set(),
+    ) -> MutableSet[str]:
+    """
+    Returns all lists in a webpage with these formats :
+        - http...
+        - https...
+        - //...
+        - /...
+    """
+    global cached_bodies
+    if origin_hostname is None:
+        origin_hostname = get_hostname(url)
+    data = session.head(url)
+    # check if the page is a html page
+    if "text/html" not in data.headers["Content-Type"] or data.status_code != 200:
+        return []
+    else:
+        data = session.get(url).text
+    filter = set()
+    data = data.replace("'", '"')
+    cached_bodies[url] = data
+    hrefs = data.split("href=")
+    for href in hrefs:
+        protocol = "https" if href.startswith("https") else "http"
+        href = fix_link(href, protocol, get_hostname(url))
+        if not href.startswith("http"): # sometime links are broken
+            continue
+        if get_hostname(href) != origin_hostname:
+            continue
+        if href.startswith("http"):
+            if recursive and href not in filter:
+                if depth < max_depth:
+                    filter.update(get_links(href, recursive, depth + 1, max_depth, origin_hostname, filter))
+            filter.add(href)
+    filter.add(url)
+    return filter
+
+def get_images(urls: MutableSet[str], root_path: str) -> MutableSet[str]:
+    global cached_bodies
+    for url in urls:
+        try:
+            data = cached_bodies.get(url, None)
+            if data is None: # non-200 status code
+                logging.info("Skipping " + url + " as we haven't received a 200 status code")
+                continue
+            logging.info("Getting images in " + url)
+        except:
+            raise RuntimeError("Failed to fetch body of {}".format(url))
+        # find each src and srcset
+        srcs = data.split("src=")
+        srcsets = data.split("srcset=")
+        to_download = set()
+        for src in srcs:
+            protocol = "https" if src.startswith("https") else "http"
+            src = fix_link(src, protocol, get_hostname(url))
+            if not src.startswith("http"): # sometime links are broken
+                continue
+            to_download.add(src)
+        for srcset in srcsets:
+            # parsing srcset is a bit more complicated
+            # the format is : <src> <size>, <src> <size>, ...
+            srcset = srcset.replace(", ", ",")
+            srcs_sizes = srcset.split(",")
+            for src_size in srcs_sizes:
+                src = " ".join(src_size.split(" ")[:-1])
+                protocol = "https" if src.startswith("https") else "http"
+                src = fix_link(src, protocol, get_hostname(url))
+                if not src.startswith("http"): # sometime links are broken
+                    continue
+                to_download.add(src)
+        for image in to_download:
+            protocol = "https" if image.startswith("https") else "http"
+            host = get_hostname(image)
+            path = image.split(protocol + "://" + host + "/")[-1]
+            url = "{}://{}/{}".format(protocol, host, path)
+            output_dir = "{}/{}".format(root_path, "/".join(path.split("/")[:-1]))
+            os.makedirs(output_dir, exist_ok=True)
+            with open("{}/{}".format(output_dir, path.split("/")[-1]), "wb+") as f:
+                f.write(session.get(url).content)
+class Spider:
+    def _check_url(self) -> bool:
+        try:
+            session.head(self.url)
+        except:
+            return False
+        return True
+
+    def __init__(self):
+        self.recursive = False
+        self.depth = 5
+        self.path = "./data"
+        self.url = sys.argv[-1].strip()
+        length = len(sys.argv)
+        for i, arg in enumerate(sys.argv):
+            if arg == "-r":
+                self.recursive = True
+            if arg == "-l":
+                # check if next arg exists, and is a number
+                if length > i + 1 and sys.argv[i + 1].isdigit():
+                    self.depth = int(sys.argv[i + 1])
+                else:
+                    print("Error: -l must be followed by a positive number")
+                    sys.exit(1)
+            if arg == "-p":
+                if length > i + 1 and i + 1 != length - 1:
+                    self.path = sys.argv[i + 1]
+                else:
+                    print("Error: -p must be followed by a path")
+                    sys.exit(1)
+        if not self._check_url():
+            print(
+                "Error: URL is not valid, make sure it starts with http:// or https://"
+            )
+            sys.exit(1)
+        logging.debug(f"recursive: {self.recursive}")
+        logging.debug(f"depth: {self.depth}")
+        logging.debug(f"path: {self.path}")
+        logging.debug(f"url: {self.url}")
+
+    def crawl(self) -> List[str]:
+        """
+        Crawl recursively (or not) a webpage
+        """
+        try:
+            links = get_links(self.url, self.recursive, 0, self.depth)
+        except:
+            print("Failed to crawl the webpage")
+            return []
+        logging.debug(f"links count: {len(links)}")
+        logging.debug(f"links: {links}")
+        try:
+            get_images(links, self.path)
+        except Exception as ex:
+            print("Unrecoverable error: {}.".format(ex))
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 1:
+        print(f"Usage: {sys.argv[0]} [-rlp] URL")
+        sys.exit(0)
+    spider = Spider()
+    spider.crawl()
