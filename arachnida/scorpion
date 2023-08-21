@@ -1,10 +1,315 @@
 #!/usr/bin/python3
 # -*- coding: utf-8 -*-
-# import tkinter as tk
 
-FILE = "exif_test.jpg"
-FILE_HANDLER = open(FILE, "rb")
+import pickle
+import sys
+import os
+import tkinter as tk
+from tkinter import ttk
+from PIL import Image, ImageTk
+from PIL.TiffImagePlugin import IFDRational
+from PIL.ExifTags import TAGS
 
-init_buf = FILE_HANDLER.read(64)
+IMAGE_TEST = "Canon_40D.jpg"
 
-# Check if the EXIF magic is present (0x04578696600004949)
+# print all exif data / metadata
+def get_exif_data(image):
+    exif_data = {}
+    img = Image.open(image)
+    info = img._getexif()
+    if info:
+        for tag, value in info.items():
+            decoded = TAGS.get(tag, tag)
+            exif_data[decoded] = value
+    return exif_data
+
+def get_metadata(image):
+    metadata = {}
+    img = Image.open(image)
+    metadata["Format"] = img.format
+    metadata["Width"] = img.width
+    metadata["Height"] = img.height
+    metadata["Mode"] = img.mode
+    metadata["Palette"] = img.palette if img.palette else "N/C"
+    metadata["Bits"] = img.bits
+    return metadata
+
+class AEditor(tk.Toplevel):
+    """
+    Abstract class for all editors
+    """
+    def __init__(self, master=None, key=None, value=None):
+        super().__init__(master)
+        self.master = master
+        self.key = key
+        self.value = value
+        self.grid()
+        self.create_widgets()
+
+    def on_ok(self):
+        assert False, "on_ok must be implemented in child class"
+    
+    def create_widgets(self):
+        assert False, "create_widgets must be implemented in child class"
+
+class IntEditor(AEditor):
+    """
+    Window to edit integer values
+    """
+    def __init__(self, master=None, key=None, value=None):
+        super().__init__(master, key, value)
+        self.title("Integer editor")
+
+    def on_ok(self):
+        self.value = self.entry.get()
+        if not self.value.isdigit() or self.value == "":
+            print("Invalid integer for value " + self.key + ": " + self.value)
+            return
+        try:
+            self.value = int(self.value)
+        except ValueError: # doesn't hurt to check twice :)
+            print("Invalid integer for value " + self.key + ": " + self.value)
+            return
+        self.master.selected_exif[self.key] = self.value
+        self.master.exif_table.set(self.master.exif_table.selection()[0], "value", self.value)
+        self.destroy()
+
+    def create_widgets(self):
+        self.label = tk.Label(self, text="New value for " + self.key)
+        self.label.grid(row=0, column=0)
+        self.entry = tk.Entry(self)
+        self.entry.grid(row=0, column=1)
+        self.ok = tk.Button(self, text="OK", command=self.on_ok)
+        self.ok.grid(row=1, column=0, columnspan=2)
+
+class FloatEditor(AEditor):
+    """
+    Window to edit float values
+    """
+    def __init__(self, master=None, key=None, value=None):
+        super().__init__(master, key, value)
+        self.title("Float editor")
+
+    def on_ok(self):
+        self.value = self.entry.get()
+        try:
+            self.value = IFDRational(float(self.value))
+        except ValueError:
+            print("Invalid float for value " + self.key + ": " + self.value)
+            return
+        self.master.selected_exif[self.key] = self.value
+        self.master.exif_table.set(self.master.exif_table.selection()[0], "value", self.value)
+        self.destroy()
+
+    def create_widgets(self):
+        self.label = tk.Label(self, text="New value for " + self.key)
+        self.label.grid(row=0, column=0)
+        self.entry = tk.Entry(self)
+        self.entry.grid(row=0, column=1)
+        self.ok = tk.Button(self, text="OK", command=self.on_ok)
+        self.ok.grid(row=1, column=0, columnspan=2)
+
+class StringEditor(AEditor):
+    """
+    Window to edit string values
+    """
+    def __init__(self, master=None, key=None, value=None):
+        super().__init__(master, key, value)
+        self.title("String editor")
+
+    def on_ok(self):
+        self.value = self.entry.get()
+        self.master.selected_exif[self.key] = self.value
+        self.master.exif_table.set(self.master.exif_table.selection()[0], "value", self.value)
+        self.destroy()
+
+    def create_widgets(self):
+        self.label = tk.Label(self, text="New value for " + self.key)
+        self.label.grid(row=0, column=0)
+        self.entry = tk.Entry(self)
+        self.entry.grid(row=0, column=1)
+        self.ok = tk.Button(self, text="OK", command=self.on_ok)
+        self.ok.grid(row=1, column=0, columnspan=2)
+
+class HexEditor(AEditor):
+    """
+    Window to edit hex values
+    """
+    def __init__(self, master=None, key=None, value=None):
+        super().__init__(master, key, value)
+        self.title("Hex editor")
+
+    def on_ok(self):
+        self.value = self.entry.get()
+        try:
+            self.value = bytes.fromhex(self.value)
+        except ValueError:
+            print("Invalid hex for value " + self.key + ": " + self.value)
+            return
+        self.master.selected_exif[self.key] = self.value
+        self.master.exif_table.set(self.master.exif_table.selection()[0], "value", "<pickle>")
+        self.destroy()
+
+    def create_widgets(self):
+        self.label = tk.Label(self, text="New value for " + self.key)
+        self.label.grid(row=0, column=0)
+        self.entry = tk.Entry(self)
+        self.entry.grid(row=0, column=1)
+        self.entry.insert(0, self.value.hex())
+        self.ok = tk.Button(self, text="OK", command=self.on_ok)
+        self.ok.grid(row=1, column=0, columnspan=2)
+
+class PickleEditor(AEditor):
+    """
+    Window to edit pickle values
+    """
+    def __init__(self, master=None, key=None, value=None):
+        super().__init__(master, key, value)
+        self.title("Pickle editor")
+
+    def on_ok(self):
+        self.value = self.entry.get()
+        try:
+            self.value = pickle.loads(bytes.fromhex(self.value))
+        except:
+            print("Invalid pickle for value " + self.key + ": " + self.value)
+            return
+        self.master.selected_exif[self.key] = self.value
+        self.master.exif_table.set(self.master.exif_table.selection()[0], "value", "<pickle>")
+        self.destroy()
+
+    def create_widgets(self):
+        self.label = tk.Label(self, text="New value for " + self.key)
+        self.label.grid(row=0, column=0)
+        self.entry = tk.Entry(self)
+        self.entry.grid(row=0, column=1)
+        self.entry.insert(0, pickle.dumps(self.value).hex())
+        self.ok = tk.Button(self, text="OK", command=self.on_ok)
+        self.ok.grid(row=1, column=0, columnspan=2)
+
+class ExifEditor(tk.Frame):
+    def __init__(self, master=None, image_path: str = None):
+        super().__init__(master)
+        if not os.path.exists(image_path):
+            raise FileNotFoundError("File " + image_path + " does not exist.")
+        self.image_path = image_path
+        self.master = master
+        self.master.title("42 Scorpion")
+        self.grid()
+        self.selected_exif = {}
+        self.exif_types = {}
+        self.create_widgets()
+
+    def on_exif_select(self, event):
+        self.selected_exif = {}
+        for item in self.exif_table.selection():
+            # get clicked key
+            key = self.exif_table.item(item)["text"]
+            self.selected_exif[key] = self.exif_data[key]
+        if self.selected_exif:
+            self.edit["state"] = "normal"
+            self.remove["state"] = "normal"
+        else:
+            self.edit["state"] = "disabled"
+            self.remove["state"] = "disabled"
+
+    def on_remove(self):
+        for item in self.exif_table.selection():
+            self.exif_table.delete(item)
+        self.selected_exif = {}
+        self.edit["state"] = "disabled"
+        self.remove["state"] = "disabled"
+
+    def on_remove_all(self):
+        for item in self.exif_table.get_children():
+            self.exif_table.delete(item)
+        self.selected_exif = {}
+        self.edit["state"] = "disabled"
+        self.remove["state"] = "disabled"
+
+    def dispatch_edit(self):
+        key = list(self.selected_exif.keys())[0]
+        value_type = self.exif_types[key]
+        value = self.selected_exif[key]
+        if value_type == IFDRational:
+            FloatEditor(self, key=key, value=value)
+        elif value_type == int:
+            IntEditor(self, key=key, value=value)
+        elif value_type == str:
+            StringEditor(self, key=key, value=value)
+        elif value_type == dict or value_type == tuple or value_type == list:
+            PickleEditor(self, key=key, value=value)
+        elif value_type == bytes:
+            HexEditor(self, key=key, value=value)
+        else:
+            print("Not implemented yet for type " + str(value_type) + " for key " + key + ".")
+
+    def create_widgets(self):
+        self.image = Image.open(self.image_path)
+        self.image.thumbnail((300, 300), Image.ADAPTIVE)
+        self.photo = ImageTk.PhotoImage(self.image)
+        self.label = tk.Label(self, image=self.photo)
+        self.label.grid(row=0, column=0, columnspan=3)
+        # Title of the table
+        self.image_metadata_title = tk.Label(self, text="Image metadata", font=("TkDefaultFont", 16))
+        self.image_metadata_title.grid(row=3, column=1)
+        self.image_metadata = get_metadata(self.image_path)
+        self.image_metadata_table = ttk.Treeview(self, columns=("value"))
+        self.image_metadata_table.heading("#0", text="Key")
+        self.image_metadata_table.heading("value", text="Value")
+        self.image_metadata_table.column("value", width=300)
+        self.image_metadata_table.grid(row=4, column=0, columnspan=3)
+        for i, (key, value) in enumerate(self.image_metadata.items()):
+            self.image_metadata_table.insert("", "end", text=key, values=(value))
+            self.image_metadata_table.set(self.image_metadata_table.get_children()[i], "value", value)
+        # Title of the table
+        self.exif_title = tk.Label(self, text="Exif data", font=("TkDefaultFont", 16))
+        self.exif_title.grid(row=5, column=1)
+        self.exif_data = get_exif_data(IMAGE_TEST)
+        self.exif_table = ttk.Treeview(self, columns=("value"))
+        self.exif_table.heading("#0", text="Key")
+        self.exif_table.heading("value", text="Value")
+        self.exif_table.column("value", width=300)
+        self.exif_table.grid(row=6, column=0, columnspan=3)
+        for i, (key, value) in enumerate(self.exif_data.copy().items()):
+            type_to_register = type(value)
+            custom_val = None
+            if isinstance(value, bytes):
+                custom_val = "<binary data>"
+                type_to_register = bytes
+            if isinstance(value, tuple):
+                custom_val = "(" + ", ".join([str(v) for v in value]) + ")"
+                type_to_register = tuple
+            if isinstance(value, list):
+                custom_val = "[" + ", ".join([str(v) for v in value]) + "]"
+                type_to_register = list
+            if isinstance(value, dict):
+                custom_val = "<dict>"
+                type_to_register = dict
+            self.exif_table.insert("", "end", text=key, values=(custom_val if custom_val else value))
+            self.exif_table.set(self.exif_table.get_children()[i], "value", custom_val if custom_val else value)
+            self.exif_types[key] = type_to_register
+        self.exif_table.bind("<ButtonRelease-1>", self.on_exif_select)
+        self.edit = tk.Button(self, text="Edit selected", fg="green", state="disabled" if not self.selected_exif else "normal", command=self.dispatch_edit)
+        self.remove = tk.Button(self, text="Remove selected", fg="#FF9912", state="disabled" if not self.selected_exif else "normal", command=self.on_remove)
+        self.remove_all = tk.Button(self, text="Remove all", fg="red", command=self.on_remove_all, state="disabled" if len(self.exif_data.keys()) == 0 else "normal") # todo: fix the state
+        self.edit.grid(row=7, column=0)
+        self.remove.grid(row=7, column=1)
+        self.remove_all.grid(row=7, column=2)
+
+if __name__ == "__main__":
+    if len(sys.argv) == 1:
+        print("Usage: python3 " + sys.argv[0] + " [IMAGES...]")
+        sys.exit(0)
+    VALID_EXTENSIONS = set(["jpg", "jpeg", "png", "gif", "bmp"])
+    for file in sys.argv[1:]:
+        if file.split(".")[-1].lower() not in VALID_EXTENSIONS:
+            continue
+        if not os.path.exists(file):
+            print("File " + file + " does not exist.")
+            continue
+        root = tk.Tk()
+        app = ExifEditor(master=root, image_path=file)
+        app.mainloop()
+        if input("Save changes? (y/n) ") == "y":
+            raise NotImplementedError("Saving changes is not implemented yet.")
