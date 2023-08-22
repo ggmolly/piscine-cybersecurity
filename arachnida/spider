@@ -5,6 +5,8 @@ import os
 import logging
 import sys
 import requests
+import traceback
+from urllib.parse import urljoin, urlparse
 from typing import MutableSet
 from bs4 import BeautifulSoup
 
@@ -15,36 +17,36 @@ session.headers.update({"User-Agent": "Arachnida/1.0"})
 cached_bodies = {}
 VALID_EXTENSIONS = set(["jpg", "jpeg", "png", "gif", "bmp"])
 
+
 def get_hostname(url: str) -> str:
     """
-    Returns the hostname of a url
+    Returns the hostname of a url, trimming also subdomains
     """
-    return url.split("/")[2]
+    try:
+        return (
+            urlparse(url).hostname.split(".")[-2]
+            + "."
+            + urlparse(url).hostname.split(".")[-1]
+        )
+    except:
+        return None
+
 
 def fix_link(href: str, protocol: str, hostname: str) -> str:
-    if not href.startswith('"'):
+    if hostname is None:
         return href
-    if href.startswith('"http'): # absolute path
-        href = href.split('"')[1]
-    elif href.startswith('"//'): # relative protocol
-        href = protocol + "://" + href.split('"')[1]
-    elif href.startswith('"#'): # anchors are ignored
-        return href
-    else: # relative path
-        if not href.startswith('"/'):
-            href = protocol + "://" + hostname + "/" + href.split('"')[1]
-        else:
-            href = protocol + "://" + hostname + href.split('"')[1]
-    return href.split("?")[0]
+    href = urljoin(protocol + "://" + hostname, href)
+    return href.split("#")[0]
+
 
 def get_links(
-        url: str,
-        recursive: bool = False,
-        depth: int = 0,
-        max_depth: int = 0,
-        origin_hostname: str | None = None,
-        filter: set = set(),
-        ) -> MutableSet[str]:
+    url: str,
+    recursive: bool = False,
+    depth: int = 0,
+    max_depth: int = 0,
+    origin_hostname: str | None = None,
+    filter: set = set(),
+) -> MutableSet[str]:
     """
     Returns all lists in a webpage with these formats :
         - http...
@@ -52,9 +54,14 @@ def get_links(
         - //...
         - /...
     """
+    if depth > max_depth:
+        return filter
+    logging.info("Getting links in " + url)
     global cached_bodies
     if origin_hostname is None:
         origin_hostname = get_hostname(url)
+    if origin_hostname is None:
+        logging.warning("Skipping malformed url: " + url)
     data = session.get(url)
     # check if the page is a html page
     filter = set([url])
@@ -63,7 +70,9 @@ def get_links(
     else:
         data = data.text
     cached_bodies[url] = data
-    if not recursive: # don't bother parsing the page if we're not searching recursively
+    if (
+        not recursive
+    ):  # don't bother parsing the page if we're not searching recursively
         return filter
     soup = BeautifulSoup(data, "html.parser")
     # find all <a> or <link> tags
@@ -71,31 +80,42 @@ def get_links(
         href = tag.get("href")
         if href is None:
             continue
-        protocol = "https" if href.startswith("https") else "http"
+        protocol = urlparse(url).scheme
         href = fix_link(href, protocol, get_hostname(url))
         if not href.startswith("http"):
             continue
         if get_hostname(href) != origin_hostname:
+            logging.info("Skipping link to external website: " + href)
             continue
-        if href.startswith("http") and recursive and href not in filter and depth < max_depth:
-            filter.update(get_links(href, recursive, depth + 1, max_depth, origin_hostname, filter))
+        if (
+            href.startswith("http")
+            and recursive
+            and href not in filter
+            and depth < max_depth
+        ):
+            filter.update(
+                get_links(
+                    href, recursive, depth + 1, max_depth, origin_hostname, filter
+                )
+            )
         filter.add(fix_link(href, protocol, get_hostname(url)))
     return filter
+
 
 def get_images(urls: MutableSet[str], root_path: str):
     global cached_bodies
     for url in urls:
         try:
             data = cached_bodies.get(url, None)
-            if data is None: # non-200 status code
-                logging.info("Skipping " + url + " as we haven't received a 200 status code")
+            if data is None:  # non-200 status code
                 continue
             logging.info("Getting images in " + url)
         except:
-            raise RuntimeError("Failed to fetch body of {}".format(url))
+            logging.error("Failed to fetch body of {}".format(url))
+            continue
         # find each src and srcset
         soup = BeautifulSoup(data, "html.parser")
-        protocol = "https" if url.startswith("https") else "http"
+        protocol = urlparse(url).scheme
         to_download = set()
         for tag in soup.find_all(["img", "source"]):
             src = tag.get("src")
@@ -105,17 +125,34 @@ def get_images(urls: MutableSet[str], root_path: str):
             if srcset is not None:
                 for src in srcset.split(","):
                     if src.split(".")[-1] in VALID_EXTENSIONS:
-                        to_download.add(fix_link(src.split(" ")[0].strip(), protocol, get_hostname(url)))
+                        to_download.add(
+                            fix_link(
+                                src.split(" ")[0].strip(), protocol, get_hostname(url)
+                            )
+                        )
         for image in to_download:
-            protocol = "https" if image.startswith("https") else "http"
-            host = get_hostname(image)
-            path = image.split(protocol + "://" + host + "/")[-1]
-            url = "{}://{}/{}".format(protocol, host, path)
-            output_dir = "{}/{}".format(root_path, "/".join(path.split("/")[:-1]))
+            if image is None:
+                continue
+            url = image
+            path = urlparse(url).path
+            output_dir = "{}/{}".format(root_path, path)
             os.makedirs(output_dir, exist_ok=True)
-            with open("{}/{}".format(output_dir, path.split("/")[-1]), "wb+") as f:
-                logging.info("Downloading " + url + " to " + output_dir)
-                f.write(session.get(url).content)
+            try:
+                with open("{}/{}".format(output_dir, path.split("/")[-1]), "wb+") as f:
+                    logging.info("Downloading " + url + " to " + output_dir)
+                    f.write(session.get(url).content)
+            except KeyboardInterrupt:
+                raise
+            except:
+                try:
+                    os.remove("{}/{}".format(output_dir, path.split("/")[-1]))
+                except KeyboardInterrupt:
+                    raise
+                except:
+                    logging.error("Failed to download {}".format(url))
+                    continue
+
+
 class Spider:
     def _check_url(self) -> bool:
         try:
@@ -148,8 +185,8 @@ class Spider:
                     sys.exit(1)
         if not self._check_url():
             print(
-                    "Error: URL is not valid, make sure it starts with http:// or https://"
-                    )
+                "Error: URL is not valid, make sure it starts with http:// or https://"
+            )
             sys.exit(1)
         logging.debug(f"recursive: {self.recursive}")
         logging.debug(f"depth: {self.depth}")
@@ -162,15 +199,18 @@ class Spider:
         """
         try:
             links = get_links(self.url, self.recursive, 0, self.depth)
-        except:
+        except Exception:
             print("Failed to crawl the webpage")
+            traceback.print_exc()
             return []
         logging.debug(f"links count: {len(links)}")
         logging.debug(f"links: {links}")
         try:
             get_images(links, self.path)
-        except Exception as ex:
-            print("Unrecoverable error: {}.".format(ex))
+        except KeyboardInterrupt:
+            pass
+        except:
+            pass
 
 
 if __name__ == "__main__":
