@@ -1,0 +1,209 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+
+import sys
+import hashlib
+import hmac
+import argparse
+import os
+import asyncio
+from typing import Any, Coroutine
+from cryptography.fernet import Fernet
+from time import time
+from textual.app import App, ComposeResult
+from textual.widgets import Header, Footer, Static, Button
+from textual_qrcode import QRCode
+
+
+# 'safely' yeah right
+FERNET_KEY = b"UfdPxCXyVRC2f6jeGjWkRMujrS6Cvm7zGNRqplL8z_A="
+
+
+def generate_key(path: str, enforced_key: str = None) -> str:
+    """
+    Generates the HOTP key from the given path
+    """
+    if enforced_key is None:
+        with open(path, "r") as f:
+            key = f.read()
+        # Check that the key is only hexadecimal and 64 chars long
+        if not all(c in "0123456789abcdef" for c in key) or len(key) != 64:
+            print("The key must be 64 hexadecimal characters long")
+            sys.exit(1)
+    else:
+        key = enforced_key
+    output_path = "ft_otp.key"
+    f = Fernet(FERNET_KEY)
+
+    # Encrypt the HOTP key and write it to the file
+    encrypted_key = f.encrypt(key.encode())
+    with open(output_path, "wb") as f:
+        f.write(encrypted_key)
+    return output_path
+
+
+def load_key(path: str = "ft_otp.key") -> str:
+    """
+    Loads the HOTP key from the given path
+    """
+    with open(path, "rb") as f:
+        encrypted_key = f.read()
+    # Decrypt the key using Fernet
+    f = Fernet(FERNET_KEY)
+    key = f.decrypt(encrypted_key).decode()
+    return key
+
+
+def generate_hotp(key: bytes = None, counter: int = None) -> str:
+    """
+    Generates the HOTP code from the given key file and counter
+    """
+    if key is None:
+        key = load_key()
+    # Calculate the counter
+    if counter is None:
+        counter = int(time() / 30)
+
+    # Calculate the HMAC-SHA1 hash of the key and counter
+    hmac_hash = hmac.new(
+        bytes.fromhex(key), counter.to_bytes(8, byteorder="big"), hashlib.sha1
+    ).digest()
+
+    # Extract the HOTP code from the hash
+    offset = hmac_hash[-1] & 0x0F
+    hotp = (
+        (hmac_hash[offset] & 0x7F) << 24
+        | (hmac_hash[offset + 1] & 0xFF) << 16
+        | (hmac_hash[offset + 2] & 0xFF) << 8
+        | (hmac_hash[offset + 3] & 0xFF)
+    ) % 10**6
+
+    return str(hotp).zfill(6)
+
+
+class KeyInteractionContainer(Static):
+    """
+    A container for the key interaction buttons
+    """
+
+    def __init__(
+        self, generate_callback: Coroutine, save_callback: Coroutine, **kwargs: Any
+    ) -> None:
+        super().__init__(**kwargs)
+        self.generate_callback = generate_callback
+        self.save_callback = save_callback
+
+    def compose(self) -> ComposeResult:
+        yield Button("Generate new key", variant="warning", id="generate_key")
+        yield Button("Save key", variant="success", id="save_key")
+
+    def on_button_pressed(self, pressed) -> None:
+        if pressed.button.id == "generate_key":
+            self.generate_callback()
+        elif pressed.button.id == "save_key":
+            self.save_callback()
+
+
+class KeyGenerateBox(Static):
+    def generate_key(self) -> str:
+        """
+        Generates a random HOTP key
+        """
+        return hashlib.sha256(os.urandom(64)).hexdigest()
+
+    def update_qr_code(self) -> None:
+        self.key = self.generate_key()
+        self.query_one(QRCode).encode(self.key)
+
+    def save_key(self) -> None:
+        """
+        Saves the key to a file
+        """
+        generate_key("ft_otp.key", self.key)
+
+    def compose(self) -> ComposeResult:
+        key = self.generate_key()
+        yield QRCode(key)
+        yield KeyInteractionContainer(
+            id="key_interaction",
+            generate_callback=self.update_qr_code,
+            save_callback=self.save_key,
+        )
+
+    async def on_mount(self) -> None:
+        self.update_qr_code()
+
+
+class HOTPGenerateBox(Static):
+    """
+    A quick and simple Textual app to generate HOTP codes
+    """
+
+    async def hotp_loop(self) -> None:
+        while True:
+            self.query_one(Static).update(
+                "Generated HOTP code: {}".format(
+                    generate_hotp() if os.path.isfile("ft_otp.key") else "Failed to load key"
+                )
+            )
+            await asyncio.sleep(1) # Update every second incase the key gets changed
+
+    def compose(self) -> ComposeResult:
+        yield Static("Generated HOTP code: {}".format("XXXXXX"), id="hotp_code")
+
+    def on_mount(self) -> None:
+        asyncio.create_task(self.hotp_loop())
+
+
+class FTOtpApp(App):
+    CSS_PATH = "ft_otp.css"
+
+    def compose(self) -> ComposeResult:
+        yield Header(show_clock=True, name="ft_otp")
+        yield KeyGenerateBox()
+        yield HOTPGenerateBox()
+        yield Footer()
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1] == "test":
+        print("Running RFC4226 tests")
+        secret = "3132333435363738393031323334353637383930"
+        for i in range(0, 10):
+            print(generate_hotp(secret, i))
+        exit(0)
+
+    args = argparse.ArgumentParser()
+    args.add_argument(
+        "-g",
+        help="create a new key from a 64 bytes hexadecimal file",
+        type=str,
+        dest="secret_key",
+    )
+    args.add_argument(
+        "-k", help="generate a hotp code from a key", type=str, dest="key_file"
+    )
+    args = args.parse_args()
+
+    if args.secret_key:
+        generate_key(args.secret_key)
+    elif args.key_file:
+        # Read the encrypted key from the file
+        try:
+            with open(args.key_file, "rb") as f:
+                encrypted_key = f.read()
+            # Decrypt the key using Fernet
+            f = Fernet(FERNET_KEY)
+            key = f.decrypt(encrypted_key).decode()
+        except:
+            print("Failed to read the key file")
+            sys.exit(1)
+        try:
+            hotp = generate_hotp(key)
+        except:
+            print("Generation failed, make sure the key wasn't tampered with")
+            sys.exit(1)
+        print(hotp)
+    else:
+        app = FTOtpApp()
+        app.run()
