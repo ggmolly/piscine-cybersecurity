@@ -135,7 +135,8 @@ def get_images(urls: MutableSet[str], root_path: str):
                 continue
             url = image
             path = urlparse(url).path
-            output_dir = "{}/{}".format(root_path, path)
+            # remove last part of the path (file name)
+            output_dir = root_path + "/".join(path.split("/")[:-1])
             os.makedirs(output_dir, exist_ok=True)
             try:
                 with open("{}/{}".format(output_dir, path.split("/")[-1]), "wb+") as f:
