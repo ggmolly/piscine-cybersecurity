@@ -14,10 +14,24 @@ from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Static, Button
 from textual_qrcode import QRCode
 
+def save_key(key: bytes = None, path: str = "ft_otp.cip") -> bytes:
+    if isinstance(key, str):
+        key = key.encode()
+    if key is None:
+        key = Fernet.generate_key()
+    with open(path, "wb+") as f:
+        f.write(key)
+    os.chmod(path, 0o400)
+    return key
 
-# 'safely' yeah right
-FERNET_KEY = b"UfdPxCXyVRC2f6jeGjWkRMujrS6Cvm7zGNRqplL8z_A="
-
+def load_fernet_key(path: str = "ft_otp.cip") -> Fernet:
+    if not os.path.isfile(path):
+        save_key(path=path)
+    try:
+        with open(path, "rb") as f:
+            return Fernet(f.read())
+    except:
+        raise Exception("Failed to read ft_otp.cip")
 
 def generate_key(path: str, enforced_key: str = None) -> str:
     """
@@ -33,12 +47,12 @@ def generate_key(path: str, enforced_key: str = None) -> str:
     else:
         key = enforced_key
     output_path = "ft_otp.key"
-    f = Fernet(FERNET_KEY)
-
+    f = load_fernet_key()
     # Encrypt the HOTP key and write it to the file
     encrypted_key = f.encrypt(key.encode())
     with open(output_path, "wb") as f:
         f.write(encrypted_key)
+    os.chmod(output_path, 0o400)
     return output_path
 
 
@@ -49,7 +63,7 @@ def load_key(path: str = "ft_otp.key") -> str:
     with open(path, "rb") as f:
         encrypted_key = f.read()
     # Decrypt the key using Fernet
-    f = Fernet(FERNET_KEY)
+    f = load_fernet_key()
     key = f.decrypt(encrypted_key).decode()
     return key
 
@@ -101,7 +115,10 @@ class KeyInteractionContainer(Static):
         if pressed.button.id == "generate_key":
             self.generate_callback()
         elif pressed.button.id == "save_key":
-            self.save_callback()
+            try:
+                self.save_callback()
+            except:
+                pass
 
 
 class KeyGenerateBox(Static):
@@ -119,6 +136,10 @@ class KeyGenerateBox(Static):
         """
         Saves the key to a file
         """
+        if os.path.isfile("ft_otp.key"):
+            os.remove("ft_otp.key")
+        if os.path.isfile("ft_otp.cip"):
+            os.remove("ft_otp.cip")
         generate_key("ft_otp.key", self.key)
 
     def compose(self) -> ComposeResult:
