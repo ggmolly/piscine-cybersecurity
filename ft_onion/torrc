@@ -1,0 +1,3 @@
+HiddenServiceDir /var/lib/tor/www/
+HiddenServicePort 80 unix:/var/run/tor-www.sock
+
