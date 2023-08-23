@@ -177,8 +177,8 @@ class HOTPGenerateBox(Static):
                 else:
                     self.query_one("#next_code").remove_class("danger")
                 self.query_one("#next_code").update(
-                    "Next code in: {}s".format(
-                        str(30 - int(time() % 30)).zfill(2)
+                    "Next code in: {}".format(
+                        str(30 - int(time() % 30)).zfill(2) + "s"
                         if os.path.isfile("ft_otp.key")
                         else "Generate a key first"
                     )
