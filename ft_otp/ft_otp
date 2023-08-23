@@ -19,13 +19,15 @@ def save_key(key: bytes = None, path: str = "ft_otp.cip") -> bytes:
         key = key.encode()
     if key is None:
         key = Fernet.generate_key()
+    if os.path.isfile(path):
+        os.remove(path)
     with open(path, "wb+") as f:
         f.write(key)
     os.chmod(path, 0o400)
     return key
 
-def load_fernet_key(path: str = "ft_otp.cip") -> Fernet:
-    if not os.path.isfile(path):
+def load_fernet_key(path: str = "ft_otp.cip", force_new_key: bool = False) -> Fernet:
+    if not os.path.isfile(path) or force_new_key:
         save_key(path=path)
     try:
         with open(path, "rb") as f:
@@ -41,15 +43,17 @@ def generate_key(path: str, enforced_key: str = None) -> str:
         with open(path, "r") as f:
             key = f.read()
         # Check that the key is only hexadecimal and 64 chars long
-        if not all(c in "0123456789abcdef" for c in key) or len(key) != 64:
+        if not all(c.lower() in "0123456789abcdef" for c in key) or len(key) != 64:
             print("The key must be 64 hexadecimal characters long")
             sys.exit(1)
     else:
         key = enforced_key
     output_path = "ft_otp.key"
-    f = load_fernet_key()
+    f = load_fernet_key(force_new_key=True)
     # Encrypt the HOTP key and write it to the file
     encrypted_key = f.encrypt(key.encode())
+    if os.path.isfile(output_path):
+        os.remove(output_path)
     with open(output_path, "wb") as f:
         f.write(encrypted_key)
     os.chmod(output_path, 0o400)
@@ -163,17 +167,30 @@ class HOTPGenerateBox(Static):
     async def hotp_loop(self) -> None:
         while True:
             try:
-                self.query_one(Static).update(
+                self.query_one("#hotp_code").update(
                     "Generated HOTP code: {}".format(
                         generate_hotp() if os.path.isfile("ft_otp.key") else "Generate a key first"
                     )
                 )
-            except:
-                self.query_one(Static).update("Invalid key or cipher key")
+                if 30 - (int(time()) % 30) < 10:
+                    self.query_one("#next_code").add_class("danger")
+                else:
+                    self.query_one("#next_code").remove_class("danger")
+                self.query_one("#next_code").update(
+                    "Next code in: {}s".format(
+                        str(30 - int(time() % 30)).zfill(2)
+                        if os.path.isfile("ft_otp.key")
+                        else "Generate a key first"
+                    )
+                )
+            except Exception as ex:
+                for dom in self.query(Static):
+                    dom.update("Invalid key or cipher key")
             await asyncio.sleep(1) # Update every second incase the key gets changed
 
     def compose(self) -> ComposeResult:
         yield Static("Generated HOTP code: {}".format("Invalid key or cipher key"), id="hotp_code")
+        yield Static("Next code in: {}".format("Invalid key or cipher key"), id="next_code")
 
     def on_mount(self) -> None:
         asyncio.create_task(self.hotp_loop())
@@ -210,7 +227,11 @@ if __name__ == "__main__":
     args = args.parse_args()
 
     if args.secret_key:
-        generate_key(args.secret_key)
+        try:
+            generate_key(args.secret_key)
+        except:
+            print("Failed to generate the key")
+            sys.exit(1)
     elif args.key_file:
         # Read the encrypted key from the file
         try:
