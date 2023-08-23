@@ -165,7 +165,7 @@ class HOTPGenerateBox(Static):
             try:
                 self.query_one(Static).update(
                     "Generated HOTP code: {}".format(
-                        generate_hotp() if os.path.isfile("ft_otp.key") else "XXXXXX"
+                        generate_hotp() if os.path.isfile("ft_otp.key") else "Generate a key first"
                     )
                 )
             except:
