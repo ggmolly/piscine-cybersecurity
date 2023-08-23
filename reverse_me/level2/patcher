@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+
+PATH = "../binary/level2"
+PATH_PATCHED = "level2_patched"
+
+assert os.path.exists(PATH), f"Could not find {PATH}"
+
+# Trying to not use the same method as level1 (because it's too boring)
+PATCHES = {
+    0x131A: ("Someone said conditions ? (NOP-ing first conditions)", b"\x90"*68),
+    0x146A: ("I see no conditions here (NOP-ing last condition)", b"\x90"*9),
+}
+
+if __name__ == "__main__":
+    with open(PATH, "rb") as f:
+        data = f.read()
+
+    for offset, (description, patch) in PATCHES.items():
+        print(f"[*] 0x{offset:04x} -> {description} ({len(patch)} bytes) [0x{patch.hex()}]")
+        data = data[:offset] + patch + data[offset+len(patch):]
+    print("[+] Done ! Patched binary saved to level2_patched")
+    print("[#] Fixing permissions...")
+    with open(PATH_PATCHED, "wb") as f:
+        f.write(data)
+    os.chmod(PATH_PATCHED, 0o755)
