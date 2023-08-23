@@ -162,15 +162,18 @@ class HOTPGenerateBox(Static):
 
     async def hotp_loop(self) -> None:
         while True:
-            self.query_one(Static).update(
-                "Generated HOTP code: {}".format(
-                    generate_hotp() if os.path.isfile("ft_otp.key") else "Failed to load key"
+            try:
+                self.query_one(Static).update(
+                    "Generated HOTP code: {}".format(
+                        generate_hotp() if os.path.isfile("ft_otp.key") else "XXXXXX"
+                    )
                 )
-            )
+            except:
+                self.query_one(Static).update("Invalid key or cipher key")
             await asyncio.sleep(1) # Update every second incase the key gets changed
 
     def compose(self) -> ComposeResult:
-        yield Static("Generated HOTP code: {}".format("XXXXXX"), id="hotp_code")
+        yield Static("Generated HOTP code: {}".format("Invalid key or cipher key"), id="hotp_code")
 
     def on_mount(self) -> None:
         asyncio.create_task(self.hotp_loop())
@@ -214,7 +217,7 @@ if __name__ == "__main__":
             with open(args.key_file, "rb") as f:
                 encrypted_key = f.read()
             # Decrypt the key using Fernet
-            f = Fernet(FERNET_KEY)
+            f = load_fernet_key()
             key = f.decrypt(encrypted_key).decode()
         except:
             print("Failed to read the key file")
