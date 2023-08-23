@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+
+PATH = "../binary/level1"
+PATH_PATCHED = "level1_patched"
+
+assert os.path.exists(PATH), f"Could not find {PATH}"
+
+PATCHES = {
+    0x1241: ("Patch CALL -> MOV to enforce a CMP 0x00 / 0x00", b"\xb8\x00"),
+    0x1243: ("Fix bad opcodes", b"\x00"*3),
+    0x1246: ("Fill remaining bytes with NOP", b"\x90"*4),
+}
+
+if __name__ == "__main__":
+    with open(PATH, "rb") as f:
+        data = f.read()
+
+    for offset, (description, patch) in PATCHES.items():
+        print(f"[*] 0x{offset:04x} -> {description} ({len(patch)} bytes) [0x{patch.hex()}]")
+        data = data[:offset] + patch + data[offset+len(patch):]
+    print("[+] Done ! Patched binary saved to level1_patched")
+    print("[#] Fixing permissions...")
+    os.chmod(PATH_PATCHED, 0o755)
+
+    with open(PATH_PATCHED, "wb") as f:
+        f.write(data)
