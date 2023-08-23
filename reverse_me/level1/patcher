@@ -23,7 +23,6 @@ if __name__ == "__main__":
         data = data[:offset] + patch + data[offset+len(patch):]
     print("[+] Done ! Patched binary saved to level1_patched")
     print("[#] Fixing permissions...")
-    os.chmod(PATH_PATCHED, 0o755)
-
     with open(PATH_PATCHED, "wb") as f:
         f.write(data)
+    os.chmod(PATH_PATCHED, 0o755)
