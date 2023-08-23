@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+
+PATH = "../binary/level3"
+PATH_PATCHED = "level3_patched"
+
+assert os.path.exists(PATH), f"Could not find {PATH}"
+
+# funny patch this time
+PATCHES = {
+    0x2004: ("secret text", b"un outstanding project et un 125/100 svp (c'etait cool?)" + b'\x00'*6),
+    0x1304: ("fix puts offset", b'\x48\x8d\x3d\xf9\x0c\x00\x00'),
+    0x1360: ("patch scanf's return for simplicity (call)", b'\xe8\x9b\xff\xff\xff'),
+    0x1352: ("patch cmp to always succeed", b'\xb8\xff\x00\x00\x00'),
+    0x1365: ("set exit code to 42 for exit syscall", b"\xbf\x2a\x00\x00\x00"),
+    0x1365+5: ("move syscall id (231)", b"\xb8\xe7\x00\x00\x00"), # 231 = exit_group
+    0x1365+10: ("syscall", b"\x0f\x05"),
+}
+
+if __name__ == "__main__":
+    with open(PATH, "rb") as f:
+        data = f.read()
+
+    for offset, (description, patch) in PATCHES.items():
+        if len(patch.hex()) > 32:
+            print(f"[*] 0x{offset:04x} -> {description} ({len(patch)} bytes) <patch too long>")
+        else:
+            print(f"[*] 0x{offset:04x} -> {description} ({len(patch)} bytes) [0x{patch.hex()}]")
+        data = data[:offset] + patch + data[offset+len(patch):]
+    print("[+] Done ! Patched binary saved to level3_patched")
+    print("[#] Fixing permissions...")
+    with open(PATH_PATCHED, "wb") as f:
+        f.write(data)
+    os.chmod(PATH_PATCHED, 0o755)
