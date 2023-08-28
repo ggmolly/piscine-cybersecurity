@@ -232,4 +232,12 @@ func main() {
 	}
 	VerboseLog("+", "Done!")
 	VerboseLog("!", "Key used:", fmt.Sprintf("%x", RANDOM_KEY))
+	if *FlagSilent {
+		key, err := os.OpenFile("./decrypt_key.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if err != nil {
+			VerboseLog("-", "Failed to create key file:", err)
+			return
+		}
+		io.WriteString(key, fmt.Sprintf("%x", RANDOM_KEY))
+	}
 }
